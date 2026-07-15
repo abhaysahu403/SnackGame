@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+
   workflow_dispatch:
 
 permissions:
@@ -16,8 +17,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
   security-report:
+
     name: Generate and Publish Trivy Report
+
     runs-on: ubuntu-latest
 
     environment:
@@ -25,119 +29,386 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      # ---------------------------------------------------
-      # 1. Checkout source code
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 1 - Checkout Repository
+      # ===================================================
+
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ---------------------------------------------------
-      # 2. Generate Trivy HTML report
-      # ---------------------------------------------------
-      - name: Generate Trivy HTML Report
+
+      # ===================================================
+      # STEP 2 - Generate Trivy JSON Report
+      # ===================================================
+
+      - name: Generate Trivy Security Report
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
-          format: template
-          template: "@contrib/html.tpl"
-          output: trivy-report.html
+          format: json
+          output: trivy-report.json
           severity: CRITICAL,HIGH,MEDIUM,LOW
           exit-code: 0
 
-      # ---------------------------------------------------
-      # 3. KEEP EXISTING ARTIFACT
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 3 - Create Browser Readable HTML Report
+      # ===================================================
+
+      - name: Generate HTML Security Report
+        shell: bash
+        run: |
+
+          mkdir -p generated-report
+
+          python3 <<'PYTHON'
+          import json
+          import html
+
+          with open("trivy-report.json", "r", encoding="utf-8") as file:
+              report = json.load(file)
+
+          vulnerabilities = []
+
+          for result in report.get("Results", []):
+              target = result.get("Target", "Unknown")
+
+              for vulnerability in result.get("Vulnerabilities") or []:
+
+                  vulnerabilities.append({
+                      "target": target,
+                      "id": vulnerability.get("VulnerabilityID", "N/A"),
+                      "package": vulnerability.get("PkgName", "N/A"),
+                      "severity": vulnerability.get("Severity", "UNKNOWN"),
+                      "installed": vulnerability.get("InstalledVersion", "N/A"),
+                      "fixed": vulnerability.get("FixedVersion", "Not available"),
+                      "title": vulnerability.get("Title", "")
+                  })
+
+
+          rows = ""
+
+          for vulnerability in vulnerabilities:
+
+              rows += f"""
+              <tr>
+                  <td>{html.escape(vulnerability['target'])}</td>
+                  <td>{html.escape(vulnerability['id'])}</td>
+                  <td>{html.escape(vulnerability['package'])}</td>
+                  <td>{html.escape(vulnerability['severity'])}</td>
+                  <td>{html.escape(vulnerability['installed'])}</td>
+                  <td>{html.escape(vulnerability['fixed'])}</td>
+                  <td>{html.escape(vulnerability['title'])}</td>
+              </tr>
+              """
+
+
+          html_report = f"""
+          <!DOCTYPE html>
+
+          <html lang="en">
+
+          <head>
+
+              <meta charset="UTF-8">
+
+              <meta
+                  name="viewport"
+                  content="width=device-width, initial-scale=1.0"
+              >
+
+              <title>SnackGame Trivy Security Report</title>
+
+              <style>
+
+                  body {{
+                      font-family: Arial, sans-serif;
+                      margin: 40px;
+                      background: #f5f7fa;
+                  }}
+
+                  h1 {{
+                      color: #24292f;
+                  }}
+
+                  .summary {{
+                      background: white;
+                      padding: 20px;
+                      margin-bottom: 25px;
+                      border-radius: 8px;
+                  }}
+
+                  table {{
+                      width: 100%;
+                      border-collapse: collapse;
+                      background: white;
+                  }}
+
+                  th {{
+                      background: #24292f;
+                      color: white;
+                      padding: 12px;
+                      text-align: left;
+                  }}
+
+                  td {{
+                      padding: 10px;
+                      border-bottom: 1px solid #ddd;
+                  }}
+
+                  tr:hover {{
+                      background: #f2f2f2;
+                  }}
+
+              </style>
+
+          </head>
+
+          <body>
+
+              <h1>SnackGame Trivy Security Report</h1>
+
+              <div class="summary">
+
+                  <h2>Scan Summary</h2>
+
+                  <p>
+                      Total vulnerabilities detected:
+                      <strong>{len(vulnerabilities)}</strong>
+                  </p>
+
+              </div>
+
+
+              <table>
+
+                  <thead>
+
+                      <tr>
+
+                          <th>Target</th>
+
+                          <th>Vulnerability</th>
+
+                          <th>Package</th>
+
+                          <th>Severity</th>
+
+                          <th>Installed Version</th>
+
+                          <th>Fixed Version</th>
+
+                          <th>Title</th>
+
+                      </tr>
+
+                  </thead>
+
+
+                  <tbody>
+
+                      {rows}
+
+                  </tbody>
+
+              </table>
+
+          </body>
+
+          </html>
+          """
+
+
+          with open(
+              "generated-report/index.html",
+              "w",
+              encoding="utf-8"
+          ) as file:
+
+              file.write(html_report)
+
+
+          print(
+              f"Generated HTML report with "
+              f"{len(vulnerabilities)} vulnerabilities"
+          )
+
+          PYTHON
+
+
+      # ===================================================
+      # STEP 4 - KEEP EXISTING ARTIFACT
+      # ===================================================
+
       - name: Upload Trivy Report Artifact
         uses: actions/upload-artifact@v4
         with:
+
           name: trivy-report-${{ github.run_id }}
-          path: trivy-report.html
+
+          path: |
+            trivy-report.json
+            generated-report/index.html
+
           retention-days: 30
 
-      # ---------------------------------------------------
-      # 4. Prepare GitHub Pages directory
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 5 - Prepare GitHub Pages Directory
+      # ===================================================
+
       - name: Prepare GitHub Pages Folder
         shell: bash
         run: |
+
           REPORT_PATH="security-reports/${GITHUB_RUN_ID}"
 
           mkdir -p "pages/${REPORT_PATH}"
 
-          cp trivy-report.html \
-            "pages/${REPORT_PATH}/index.html"
+          cp generated-report/index.html \
+             "pages/${REPORT_PATH}/index.html"
+
 
           cat > pages/index.html <<EOF
+
           <!DOCTYPE html>
+
           <html lang="en">
+
           <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>SnackGame Security Reports</title>
+
+              <meta charset="UTF-8">
+
+              <meta
+                  name="viewport"
+                  content="width=device-width, initial-scale=1.0"
+              >
+
+              <title>SnackGame Security Reports</title>
+
           </head>
+
+
           <body>
-            <h1>SnackGame Security Reports</h1>
 
-            <p>Latest workflow run:</p>
+              <h1>SnackGame Security Reports</h1>
 
-            <a href="./security-reports/${GITHUB_RUN_ID}/">
-              Open Trivy Security Report - Run ${GITHUB_RUN_ID}
-            </a>
+              <h2>Latest Security Scan</h2>
+
+              <p>
+                  Workflow Run ID:
+                  ${GITHUB_RUN_ID}
+              </p>
+
+              <a href="./security-reports/${GITHUB_RUN_ID}/">
+
+                  Open Trivy Security Report
+
+              </a>
+
           </body>
+
           </html>
+
           EOF
 
-      # ---------------------------------------------------
-      # 5. Configure GitHub Pages
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 6 - Configure GitHub Pages
+      # ===================================================
+
       - name: Setup GitHub Pages
         uses: actions/configure-pages@v5
 
-      # ---------------------------------------------------
-      # 6. Upload GitHub Pages artifact
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 7 - Upload Pages Artifact
+      # ===================================================
+
       - name: Upload GitHub Pages Artifact
         uses: actions/upload-pages-artifact@v3
         with:
+
           path: pages
 
-      # ---------------------------------------------------
-      # 7. Deploy GitHub Pages
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 8 - Deploy GitHub Pages
+      # ===================================================
+
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
-      # ---------------------------------------------------
-      # 8. Generate report URL
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 9 - Generate Report URL
+      # ===================================================
+
       - name: Generate Trivy Report URL
         shell: bash
         run: |
+
           REPORT_URL="${{ steps.deployment.outputs.page_url }}security-reports/${GITHUB_RUN_ID}/"
 
-          echo "REPORT_URL=${REPORT_URL}" >> "$GITHUB_ENV"
+          echo "REPORT_URL=${REPORT_URL}" \
+          >> "$GITHUB_ENV"
 
-      # ---------------------------------------------------
-      # 9. Publish URL to workflow summary
-      # ---------------------------------------------------
+
+      # ===================================================
+      # STEP 10 - Publish Workflow Summary
+      # ===================================================
+
       - name: Publish Report Link To Workflow Summary
         shell: bash
         run: |
-          echo "## 🔐 Trivy Security Report" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Security scanning completed successfully." >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Report Details" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Repository:** \`${GITHUB_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Branch:** \`${GITHUB_REF_NAME}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Commit:** \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Run ID:** \`${GITHUB_RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### 📊 Browser Report" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "👉 [Open Trivy Security Report](${REPORT_URL})" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> The original report is also retained as a GitHub Actions artifact." >> "$GITHUB_STEP_SUMMARY"
+
+          echo "## Trivy Security Report" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Security scanning completed successfully." \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "### Report Details" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "- **Repository:** \`${GITHUB_REPOSITORY}\`" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "- **Branch:** \`${GITHUB_REF_NAME}\`" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "- **Commit:** \`${GITHUB_SHA}\`" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "- **Run ID:** \`${GITHUB_RUN_ID}\`" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "### Browser Report" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "[Open Trivy Security Report](${REPORT_URL})" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+          >> "$GITHUB_STEP_SUMMARY"
+
+          echo "> Original reports are also retained as GitHub Actions artifacts." \
+          >> "$GITHUB_STEP_SUMMARY"
