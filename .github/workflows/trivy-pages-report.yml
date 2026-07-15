@@ -1,0 +1,143 @@
+name: Trivy Report - GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  security-report:
+    name: Generate and Publish Trivy Report
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      # ---------------------------------------------------
+      # 1. Checkout source code
+      # ---------------------------------------------------
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ---------------------------------------------------
+      # 2. Generate Trivy HTML report
+      # ---------------------------------------------------
+      - name: Generate Trivy HTML Report
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: template
+          template: "@contrib/html.tpl"
+          output: trivy-report.html
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: 0
+
+      # ---------------------------------------------------
+      # 3. KEEP EXISTING ARTIFACT
+      # ---------------------------------------------------
+      - name: Upload Trivy Report Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ github.run_id }}
+          path: trivy-report.html
+          retention-days: 30
+
+      # ---------------------------------------------------
+      # 4. Prepare GitHub Pages directory
+      # ---------------------------------------------------
+      - name: Prepare GitHub Pages Folder
+        shell: bash
+        run: |
+          REPORT_PATH="security-reports/${GITHUB_RUN_ID}"
+
+          mkdir -p "pages/${REPORT_PATH}"
+
+          cp trivy-report.html \
+            "pages/${REPORT_PATH}/index.html"
+
+          cat > pages/index.html <<EOF
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>SnackGame Security Reports</title>
+          </head>
+          <body>
+            <h1>SnackGame Security Reports</h1>
+
+            <p>Latest workflow run:</p>
+
+            <a href="./security-reports/${GITHUB_RUN_ID}/">
+              Open Trivy Security Report - Run ${GITHUB_RUN_ID}
+            </a>
+          </body>
+          </html>
+          EOF
+
+      # ---------------------------------------------------
+      # 5. Configure GitHub Pages
+      # ---------------------------------------------------
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      # ---------------------------------------------------
+      # 6. Upload GitHub Pages artifact
+      # ---------------------------------------------------
+      - name: Upload GitHub Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+      # ---------------------------------------------------
+      # 7. Deploy GitHub Pages
+      # ---------------------------------------------------
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      # ---------------------------------------------------
+      # 8. Generate report URL
+      # ---------------------------------------------------
+      - name: Generate Trivy Report URL
+        shell: bash
+        run: |
+          REPORT_URL="${{ steps.deployment.outputs.page_url }}security-reports/${GITHUB_RUN_ID}/"
+
+          echo "REPORT_URL=${REPORT_URL}" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------
+      # 9. Publish URL to workflow summary
+      # ---------------------------------------------------
+      - name: Publish Report Link To Workflow Summary
+        shell: bash
+        run: |
+          echo "## 🔐 Trivy Security Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Security scanning completed successfully." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Report Details" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Repository:** \`${GITHUB_REPOSITORY}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Branch:** \`${GITHUB_REF_NAME}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Run ID:** \`${GITHUB_RUN_ID}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 📊 Browser Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "👉 [Open Trivy Security Report](${REPORT_URL})" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> The original report is also retained as a GitHub Actions artifact." >> "$GITHUB_STEP_SUMMARY"
